@@ -53,12 +53,15 @@ EndEnumeration
 
 Enumeration Shortcuts
   #ShortcutSearch
+  #ShortcutQuit
 EndEnumeration
 
 #DB = 0
 
 Global gScanProg.i = 0        ; RunProgram handle while a scan is active
 Global gFtsAvailable.i = -1   ; -1 unknown, 0 no, 1 yes
+Global gDbPath$ = GetHomeDirectory() + "d64catalog.db"
+Global gLibRoot$ = GetHomeDirectory()
 
 ;- Database helpers -----------------------------------------------------------
 
@@ -148,18 +151,18 @@ EndProcedure
 Procedure.s TypeFilterSql()
   ; Build "AND d.image_type IN ('D64','D81',...)" from the checkboxes.
   ; No boxes checked = no filter (show everything).
-  Protected list$ = ""
-  If GetGadgetState(#ChkD64) : list$ + "'D64'," : EndIf
-  If GetGadgetState(#ChkD71) : list$ + "'D71'," : EndIf
-  If GetGadgetState(#ChkD81) : list$ + "'D81'," : EndIf
-  If GetGadgetState(#ChkTAP) : list$ + "'TAP'," : EndIf
-  If GetGadgetState(#ChkT64) : list$ + "'T64'," : EndIf
-  If GetGadgetState(#ChkPRG) : list$ + "'PRG'," : EndIf
-  If GetGadgetState(#ChkCRT) : list$ + "'CRT'," : EndIf
-  If list$ = ""
+  Protected List$ = ""
+  If GetGadgetState(#ChkD64) : List$ + "'D64'," : EndIf
+  If GetGadgetState(#ChkD71) : List$ + "'D71'," : EndIf
+  If GetGadgetState(#ChkD81) : List$ + "'D81'," : EndIf
+  If GetGadgetState(#ChkTAP) : List$ + "'TAP'," : EndIf
+  If GetGadgetState(#ChkT64) : List$ + "'T64'," : EndIf
+  If GetGadgetState(#ChkPRG) : List$ + "'PRG'," : EndIf
+  If GetGadgetState(#ChkCRT) : List$ + "'CRT'," : EndIf
+  If List$ = ""
     ProcedureReturn ""
   EndIf
-  ProcedureReturn " AND d.image_type IN (" + RTrim(list$, ",") + ")"
+  ProcedureReturn " AND d.image_type IN (" + RTrim(List$, ",") + ")"
 EndProcedure
 
 Procedure AddResultRow(name$, disk$, type$, path$)
@@ -393,10 +396,12 @@ Procedure BuildUi()
              #PB_Window_MaximizeGadget | #PB_Window_SizeGadget |
              #PB_Window_ScreenCentered)
   WindowBounds(#WinMain, 970, 450, #PB_Ignore, #PB_Ignore)
+  
+  AddKeyboardShortcut(#WinMain, #PB_Shortcut_Command | #PB_Shortcut_Q, #ShortcutQuit)
 
   TextGadget(#TxtRoot, 10, 16, 105, 20, "Library root:",
              #PB_Text_Right)
-  StringGadget(#StrRoot, 120, 12, 660, 24, GetHomeDirectory())
+  StringGadget(#StrRoot, 120, 12, 660, 24, gLibRoot$)
   ButtonGadget(#BtnRootBrowse, 790, 12, 70, 24, "Browse...")
   ButtonGadget(#BtnScan, 870, 12, 90, 24, "SCAN")
 
@@ -441,8 +446,49 @@ Procedure BuildUi()
   AddKeyboardShortcut(#WinMain, #PB_Shortcut_Return, #ShortcutSearch)
 EndProcedure
 
+;- Config File Helpers --------------------------------------------------------
+
+Procedure.s ConfigDir()
+  Protected d$
+  CompilerSelect #PB_Compiler_OS
+    CompilerCase #PB_OS_Windows
+      d$ = GetEnvironmentVariable("APPDATA")
+      If d$ = "" : d$ = GetHomeDirectory() + "AppData\Roaming" : EndIf
+      If Right(d$, 1) <> "\" : d$ + "\" : EndIf
+      d$ + "D64Catalog\"
+    CompilerCase #PB_OS_MacOS
+      d$ = GetHomeDirectory() + "Library/Application Support/D64Catalog/"
+    CompilerDefault   ; Linux / BSD
+      d$ = GetEnvironmentVariable("XDG_CONFIG_HOME")
+      If d$ = "" : d$ = GetHomeDirectory() + ".config" : EndIf
+      If Right(d$, 1) <> "/" : d$ + "/" : EndIf
+      d$ + "d64catalog/"
+  CompilerEndSelect
+  ProcedureReturn d$
+EndProcedure
+
+Procedure LoadConfig()
+  If OpenPreferences(ConfigDir() + "config.ini")
+    PreferenceGroup("paths")
+    gDbPath$  = ReadPreferenceString("database", gDbPath$)
+    gLibRoot$ = ReadPreferenceString("library", GetHomeDirectory())
+    ClosePreferences()
+  EndIf
+EndProcedure
+
+Procedure SaveConfig()
+  CreateDirectory(ConfigDir())   ; parent always exists, one level is enough
+  If CreatePreferences(ConfigDir() + "config.ini")
+    PreferenceGroup("paths")
+    WritePreferenceString("database", gDbPath$)
+    WritePreferenceString("library", GetGadgetText(#StrRoot))
+    ClosePreferences()
+  EndIf
+EndProcedure
+
 ;- Main -----------------------------------------------------------------------
 
+LoadConfig()
 UseSQLiteDatabase()
 BuildUi()
 
@@ -467,7 +513,11 @@ Repeat
       If EventMenu() = #ShortcutSearch
         RunSearch()
       EndIf
-
+      If EventMenu() = #ShortcutQuit
+        SaveConfig()
+        End
+      EndIf
+      
     Case #PB_Event_Gadget
       Select EventGadget()
         Case #BtnScan
@@ -485,13 +535,15 @@ Repeat
 Until quit
 
 If gScanProg
+  SaveConfig()
   KillProgram(gScanProg)
   CloseProgram(gScanProg)
 EndIf
 End
-
 ; IDE Options = PureBasic 6.41 beta 3 - C Backend (MacOS X - arm64)
-; Folding = ---
+; CursorPosition = 518
+; FirstLine = 485
+; Folding = ----
 ; EnableThread
 ; EnableXP
 ; DPIAware

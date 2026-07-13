@@ -17,11 +17,45 @@ Schema:
 """
 
 import argparse
+import configparser
 import logging
 import os
 import sqlite3
 import sys
 import time
+
+from pathlib import Path
+
+APP_NAME = "D64Catalog"
+
+
+def config_path():
+    if sys.platform == "win32":
+        base = (
+            Path(
+                os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")
+            )
+            / APP_NAME
+        )
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support" / APP_NAME
+    else:
+        base = (
+            Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+            / APP_NAME.lower()
+        )
+    return base / "config.ini"
+
+
+def config_database():
+    """Default DB path from the shared config, or None."""
+    p = config_path()
+    if not p.is_file():
+        return None
+    cfg = configparser.ConfigParser()
+    cfg.read(p, encoding="utf-8-sig")
+    return cfg.get("paths", "database", fallback=None)
+
 
 # ---------------------------------------------------------------------------
 # PETSCII handling
@@ -634,7 +668,11 @@ def cmd_scan(args):
         logging.error("Not a directory: %s", root)
         return 2
 
-    con = open_db(args.database)
+    if not args.database and not config_database():
+        logging.error("No database specified.")
+        return 2
+
+    con = open_db(args.database if args.database else config_database())
     counts = {"added": 0, "updated": 0, "skipped": 0, "error": 0}
 
     for path in find_images(root):
@@ -674,11 +712,11 @@ def cmd_scan(args):
 
 
 def cmd_search(args):
-    if not os.path.exists(args.database):
-        logging.error("Database not found: %s", args.database)
+    if not args.database and not config_database():
+        logging.error("No database specified.")
         return 2
 
-    con = open_db(args.database)
+    con = open_db(args.database if args.database else config_database())
     if not has_fts5(con):
         logging.error("This SQLite build lacks FTS5")
         return 2
@@ -752,7 +790,10 @@ def main():
         "directory", help="root directory to scan recursively"
     )
     ap_scan.add_argument(
-        "database", help="SQLite database path (created if absent)"
+        "database",
+        nargs="?",
+        default=None,
+        help="SQLite database path (default: from config)",
     )
     ap_scan.add_argument(
         "--force",
