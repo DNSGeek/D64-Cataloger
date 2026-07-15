@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 d64catalog.py - Recursively scan a directory for Commodore disk/tape images
-(D64, D71, D81, T64, TAP, PRG, CRT) and catalog their contents into a SQLite database.
+(D64, D71, D80, D81, D82, T64, TAP, PRG, CRT) and catalog their contents
+into a SQLite database.
 
 Usage:
     python3 d64catalog.py scan /path/to/images catalog.db
@@ -190,6 +191,16 @@ def _walk_cbm_directory(data, start, offset_fn, valid_ts, max_sectors=200):
             ftype, locked, splat = decode_type_byte(type_byte)
             name_raw = strip_a0(e[5:21])
             blocks = e[30] | (e[31] << 8)
+
+            # PRG load address lives in the first two data bytes of the
+            # file's first sector (right after the 2-byte t/s link).
+            # $0801 = C64 BASIC, $1001 = VIC-20, $1C01 = C128, $0401 = PET.
+            load_addr = None
+            if ftype == "PRG" and valid_ts(e[3], e[4]):
+                fo = offset_fn(e[3], e[4])
+                if fo + 4 <= len(data):
+                    load_addr = data[fo + 2] | (data[fo + 3] << 8)
+
             files.append(
                 make_file_entry(
                     name_raw,
@@ -200,6 +211,7 @@ def _walk_cbm_directory(data, start, offset_fn, valid_ts, max_sectors=200):
                     size_bytes=blocks * 254 if blocks else 0,
                     start_track=e[3],
                     start_sector=e[4],
+                    load_addr=load_addr,
                 )
             )
 
@@ -285,6 +297,66 @@ def parse_d81(data, stem=None):
         valid_ts=lambda t, s: 1 <= t <= 80 and s < 40,
     )
     return diskname_raw, dos_id, files
+
+
+# ---------------------------------------------------------------------------
+# D80 / D82 (8050 single-sided / 8250 double-sided PET disks)
+#
+# Geometry per Peter Schepers' D80-D82.TXT: 77 tracks per side in four
+# density zones. BAM lives on track 38, header on 39/0, directory chain
+# starts at 39/1 (max 28 sectors * 8 entries = 224 files). Directory
+# entries use the same 32-byte layout as the 1541, so the shared walker
+# handles them unchanged.
+# ---------------------------------------------------------------------------
+
+
+def _d8x_sectors_on_track(track):
+    # Zone layout repeats on side 2 of a D82 (tracks 78-154 mirror 1-77).
+    t = (track - 1) % 77 + 1
+    if t <= 39:
+        return 29
+    if t <= 53:
+        return 27
+    if t <= 64:
+        return 25
+    return 23
+
+
+def _d8x_offset(track, sector):
+    off = 0
+    for t in range(1, track):
+        off += _d8x_sectors_on_track(t)
+    return (off + sector) * 256
+
+
+def _parse_d8x(data, tracks):
+    hdr = _d8x_offset(39, 0)
+    # Header 39/0: name at $06 (A0-padded), disk ID at $18-$19.
+    diskname_raw = strip_a0(data[hdr + 0x06 : hdr + 0x17])
+    dos_id = petscii_to_ascii(data[hdr + 0x18 : hdr + 0x1A])
+
+    files = _walk_cbm_directory(
+        data,
+        start=(39, 1),
+        offset_fn=_d8x_offset,
+        valid_ts=lambda t, s: 1 <= t <= tracks
+        and s < _d8x_sectors_on_track(t),
+    )
+    return diskname_raw, dos_id, files
+
+
+def parse_d80(data, stem=None):
+    # 2083 sectors * 256; +2083 for the error-byte variant.
+    if len(data) not in (533248, 535331):
+        raise ValueError("unrecognized D80 size: %d bytes" % len(data))
+    return _parse_d8x(data, 77)
+
+
+def parse_d82(data, stem=None):
+    # 4166 sectors * 256; +4166 for the error-byte variant.
+    if len(data) not in (1066496, 1070662):
+        raise ValueError("unrecognized D82 size: %d bytes" % len(data))
+    return _parse_d8x(data, 154)
 
 
 # ---------------------------------------------------------------------------
@@ -466,7 +538,9 @@ def parse_tap(data, stem=None):
 PARSERS = {
     ".d64": ("D64", parse_d64),
     ".d71": ("D71", parse_d71),
+    ".d80": ("D80", parse_d80),
     ".d81": ("D81", parse_d81),
+    ".d82": ("D82", parse_d82),
     ".t64": ("T64", parse_t64),
     ".tap": ("TAP", parse_tap),
     ".prg": ("PRG", parse_prg),
@@ -730,7 +804,7 @@ def cmd_search(args):
 
     sql = (
         "SELECT d.path, d.diskname, f.name, f.file_type, f.blocks, "
-        "f.size_bytes, f.splat "
+        "f.size_bytes, f.splat, f.load_addr "
         "FROM search_fts s "
         "JOIN files f ON f.id = s.file_id "
         "JOIN disks d ON d.id = s.disk_id "
@@ -755,11 +829,13 @@ def cmd_search(args):
         logging.info("no matches for: %s", args.query)
         return 1
 
-    for path, diskname, name, ftype, blocks, size, splat in rows:
+    for path, diskname, name, ftype, blocks, size, splat, load_addr in rows:
         size_str = "%d blk" % blocks if blocks is not None else "%d B" % size
         flag = "*" if splat else " "
+        if ftype == "PRG" and load_addr is not None:
+            name = "[$%04X] %s" % (load_addr, name)
         logging.info(
-            "%-16s %s%-4s %8s  [%s] %s",
+            "%-24s %s%-4s %8s  [%s] %s",
             name,
             flag,
             ftype,
@@ -773,7 +849,8 @@ def cmd_search(args):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="Catalog and search D64/D81/T64 images in SQLite."
+        description="Catalog and search Commodore disk/tape images "
+        "(D64/D71/D80/D81/D82/T64/TAP/PRG/CRT) in SQLite."
     )
 
     ap.add_argument(

@@ -39,7 +39,9 @@ Enumeration Gadgets
   #TxtInclude
   #ChkD64
   #ChkD71
+  #ChkD80
   #ChkD81
+  #ChkD82
   #ChkTAP
   #ChkT64
   #ChkPRG
@@ -60,7 +62,6 @@ EndEnumeration
 
 Global gScanProg.i = 0        ; RunProgram handle while a scan is active
 Global gFtsAvailable.i = -1   ; -1 unknown, 0 no, 1 yes
-Global gDbPath$ = GetHomeDirectory() + "d64catalog.db"
 Global gLibRoot$ = GetHomeDirectory()
 
 ;- Database helpers -----------------------------------------------------------
@@ -154,7 +155,9 @@ Procedure.s TypeFilterSql()
   Protected List$ = ""
   If GetGadgetState(#ChkD64) : List$ + "'D64'," : EndIf
   If GetGadgetState(#ChkD71) : List$ + "'D71'," : EndIf
+  If GetGadgetState(#ChkD80) : List$ + "'D80'," : EndIf
   If GetGadgetState(#ChkD81) : List$ + "'D81'," : EndIf
+  If GetGadgetState(#ChkD82) : List$ + "'D82'," : EndIf
   If GetGadgetState(#ChkTAP) : List$ + "'TAP'," : EndIf
   If GetGadgetState(#ChkT64) : List$ + "'T64'," : EndIf
   If GetGadgetState(#ChkPRG) : List$ + "'PRG'," : EndIf
@@ -204,13 +207,17 @@ Procedure.i QueryImageNames(raw$)
 EndProcedure
 
 Procedure.i QueryFileNames(raw$)
-  ; One row per matching FILE inside an image.
-  Protected rows.i = 0, ok.i, blocks$
+  ; One row per matching FILE inside an image. PRG files get their load
+  ; address prefixed in brackets ([$0801] JUMPMAN) so the target machine
+  ; is obvious at a glance. NULL load_addr rides through as -1 because
+  ; PB's database library has no null test.
+  Protected rows.i = 0, ok.i, name$, type$, la.i
   If ProbeFts()
     Protected match$ = "{name} : (" + FtsEscape(raw$) + ")"
     SetDatabaseString(#DB, 0, match$)
     ok = DatabaseQuery(#DB,
-        "SELECT f.name, d.diskname, f.file_type, d.path " +
+        "SELECT f.name, d.diskname, f.file_type, d.path, " +
+        "IFNULL(f.load_addr, -1) " +
         "FROM search_fts s " +
         "JOIN files f ON f.id = s.file_id " +
         "JOIN disks d ON d.id = s.disk_id " +
@@ -219,15 +226,22 @@ Procedure.i QueryFileNames(raw$)
   Else
     SetDatabaseString(#DB, 0, "%" + raw$ + "%")
     ok = DatabaseQuery(#DB,
-        "SELECT f.name, d.diskname, f.file_type, d.path " +
+        "SELECT f.name, d.diskname, f.file_type, d.path, " +
+        "IFNULL(f.load_addr, -1) " +
         "FROM files f JOIN disks d ON d.id = f.disk_id " +
         "WHERE f.name LIKE ?" + TypeFilterSql() +
         " ORDER BY f.name LIMIT 500")
   EndIf
   If ok
     While NextDatabaseRow(#DB)
-      AddResultRow(GetDatabaseString(#DB, 0), GetDatabaseString(#DB, 1),
-                   GetDatabaseString(#DB, 2), GetDatabaseString(#DB, 3))
+      name$ = GetDatabaseString(#DB, 0)
+      type$ = GetDatabaseString(#DB, 2)
+      la = GetDatabaseLong(#DB, 4)
+      If type$ = "PRG" And la >= 0
+        name$ = "[$" + RSet(Hex(la), 4, "0") + "] " + name$
+      EndIf
+      AddResultRow(name$, GetDatabaseString(#DB, 1), type$,
+                   GetDatabaseString(#DB, 3))
       rows + 1
     Wend
     FinishDatabaseQuery(#DB)
@@ -391,24 +405,24 @@ Procedure ResizeUi()
 EndProcedure
 
 Procedure BuildUi()
-  OpenWindow(#WinMain, 0, 0, 970, 690, "D64Catalog",
+  OpenWindow(#WinMain, 0, 0, 1080, 690, "D64Catalog",
              #PB_Window_SystemMenu | #PB_Window_MinimizeGadget |
              #PB_Window_MaximizeGadget | #PB_Window_SizeGadget |
              #PB_Window_ScreenCentered)
-  WindowBounds(#WinMain, 970, 450, #PB_Ignore, #PB_Ignore)
+  WindowBounds(#WinMain, 1080, 450, #PB_Ignore, #PB_Ignore)
   
   AddKeyboardShortcut(#WinMain, #PB_Shortcut_Command | #PB_Shortcut_Q, #ShortcutQuit)
 
   TextGadget(#TxtRoot, 10, 16, 105, 20, "Library root:",
              #PB_Text_Right)
-  StringGadget(#StrRoot, 120, 12, 660, 24, gLibRoot$)
-  ButtonGadget(#BtnRootBrowse, 790, 12, 70, 24, "Browse...")
-  ButtonGadget(#BtnScan, 870, 12, 90, 24, "SCAN")
+  StringGadget(#StrRoot, 120, 12, 770, 24, gLibRoot$)
+  ButtonGadget(#BtnRootBrowse, 900, 12, 70, 24, "Browse...")
+  ButtonGadget(#BtnScan, 980, 12, 90, 24, "SCAN")
 
   TextGadget(#TxtDb, 10, 50, 105, 20, "Database:", #PB_Text_Right)
-  StringGadget(#StrDb, 120, 46, 660, 24, gDbPath$)
-  ButtonGadget(#BtnDbBrowse, 790, 46, 70, 24, "Open...")
-  ButtonGadget(#BtnDbNew, 870, 46, 90, 24, "New...")
+  StringGadget(#StrDb, 120, 46, 770, 24, gDbPath$)
+  ButtonGadget(#BtnDbBrowse, 900, 46, 70, 24, "Open...")
+  ButtonGadget(#BtnDbNew, 980, 46, 90, 24, "New...")
 
   TextGadget(#TxtSearch, 10, 84, 105, 20, "Search :", #PB_Text_Right)
   StringGadget(#StrSearch, 120, 80, 330, 24, "")
@@ -417,16 +431,20 @@ Procedure BuildUi()
   TextGadget(#TxtInclude, 520, 84, 60, 20, "Include:")
   CheckBoxGadget(#ChkD64, 582, 82, 52, 20, "D64")
   CheckBoxGadget(#ChkD71, 636, 82, 52, 20, "D71")
-  CheckBoxGadget(#ChkD81, 690, 82, 52, 20, "D81")
-  CheckBoxGadget(#ChkTAP, 744, 82, 52, 20, "TAP")
-  CheckBoxGadget(#ChkT64, 798, 82, 52, 20, "T64")
-  CheckBoxGadget(#ChkPRG, 852, 82, 52, 20, "PRG")
-  CheckBoxGadget(#ChkCRT, 906, 82, 54, 20, "CRT")
+  CheckBoxGadget(#ChkD80, 690, 82, 52, 20, "D80")
+  CheckBoxGadget(#ChkD81, 744, 82, 52, 20, "D81")
+  CheckBoxGadget(#ChkD82, 798, 82, 52, 20, "D82")
+  CheckBoxGadget(#ChkTAP, 852, 82, 52, 20, "TAP")
+  CheckBoxGadget(#ChkT64, 906, 82, 52, 20, "T64")
+  CheckBoxGadget(#ChkPRG, 960, 82, 52, 20, "PRG")
+  CheckBoxGadget(#ChkCRT, 1014, 82, 54, 20, "CRT")
 
-  ; Defaults follow the mockup: D64/D71/D81/CRT on, TAP/T64/PRG off.
+  ; Defaults follow the mockup: disk images and CRT on, TAP/T64/PRG off.
   SetGadgetState(#ChkD64, #PB_Checkbox_Checked)
   SetGadgetState(#ChkD71, #PB_Checkbox_Checked)
+  SetGadgetState(#ChkD80, #PB_Checkbox_Checked)
   SetGadgetState(#ChkD81, #PB_Checkbox_Checked)
+  SetGadgetState(#ChkD82, #PB_Checkbox_Checked)
   SetGadgetState(#ChkCRT, #PB_Checkbox_Checked)
 
   TextGadget(#TxtFind, 10, 118, 105, 20, "Find :", #PB_Text_Right)
@@ -434,13 +452,13 @@ Procedure BuildUi()
   CheckBoxGadget(#ChkFileName, 250, 116, 200, 20, "File name inside image")
   SetGadgetState(#ChkImageName, #PB_Checkbox_Checked)
 
-  ListIconGadget(#LstResults, 10, 148, 950, 502, "Name", 380,
+  ListIconGadget(#LstResults, 10, 148, 1060, 502, "Name", 420,
                  #PB_ListIcon_FullRowSelect | #PB_ListIcon_AlwaysShowSelection)
   AddGadgetColumn(#LstResults, 1, "Disk", 150)
   AddGadgetColumn(#LstResults, 2, "Type", 55)
-  AddGadgetColumn(#LstResults, 3, "Path", 340)
+  AddGadgetColumn(#LstResults, 3, "Path", 410)
 
-  TextGadget(#TxtStatus, 10, 660, 950, 20,
+  TextGadget(#TxtStatus, 10, 660, 1060, 20,
              "Database: " + gDbPath$)
 
   AddKeyboardShortcut(#WinMain, #PB_Shortcut_Return, #ShortcutSearch)
