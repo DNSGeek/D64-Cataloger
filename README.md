@@ -15,7 +15,9 @@ half-remember from 1987? This is for that.
 |--------|-----------|-------------------------------------------------------|
 | D64    | .d64      | Disk name, ID, full directory (35/40/42-track, with or without error info) |
 | D71    | .d71      | Same as D64; double-sided 1571 layout                 |
+| D80    | .d80      | Single sided PET disk. Disk name, ID, full directory  |
 | D81    | .d81      | Disk name, ID, full directory                         |
+| D82    | .d82      | Double sided PET disk. Disk name, ID, full directory  |
 | T64    | .t64      | Tape name and entries, including repairs for the common broken-header cases |
 | TAP    | .tap      | Container only: filename stands in as the program name (TAP has no directory) |
 | PRG    | .prg      | Single file: name from the host filename, load address from the first two bytes |
