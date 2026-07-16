@@ -24,7 +24,7 @@ import os
 import sqlite3
 import sys
 import time
-
+from json import dumps
 from pathlib import Path
 
 APP_NAME = "D64Catalog"
@@ -33,9 +33,7 @@ APP_NAME = "D64Catalog"
 def config_path():
     if sys.platform == "win32":
         base = (
-            Path(
-                os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")
-            )
+            Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
             / APP_NAME
         )
     elif sys.platform == "darwin":
@@ -233,8 +231,7 @@ def parse_d64(data, stem=None):
         data,
         start=(18, 1),
         offset_fn=_d64_offset,
-        valid_ts=lambda t, s: 1 <= t <= tracks
-        and s < _d64_sectors_on_track(t),
+        valid_ts=lambda t, s: 1 <= t <= tracks and s < _d64_sectors_on_track(t),
     )
     return diskname_raw, dos_id, files
 
@@ -339,13 +336,15 @@ def _parse_d8x(data, tracks):
         data,
         start=(39, 1),
         offset_fn=_d8x_offset,
-        valid_ts=lambda t, s: 1 <= t <= tracks
-        and s < _d8x_sectors_on_track(t),
+        valid_ts=lambda t, s: 1 <= t <= tracks and s < _d8x_sectors_on_track(t),
     )
     return diskname_raw, dos_id, files
 
 
 def parse_d80(data, stem=None):
+    # Check if mislabeled d82
+    if len(data) in (1066496, 1070662):
+        return _parse_d8x(data, 154)
     # 2083 sectors * 256; +2083 for the error-byte variant.
     if len(data) not in (533248, 535331):
         raise ValueError("unrecognized D80 size: %d bytes" % len(data))
@@ -353,6 +352,9 @@ def parse_d80(data, stem=None):
 
 
 def parse_d82(data, stem=None):
+    # Check if mislabeled d80
+    if len(data) in (533248, 535331):
+        return _parse_d8x(data, 77)
     # 4166 sectors * 256; +4166 for the error-byte variant.
     if len(data) not in (1066496, 1070662):
         raise ValueError("unrecognized D82 size: %d bytes" % len(data))
@@ -478,9 +480,7 @@ def parse_crt(data, stem=None):
             {
                 "name_raw": name.encode("ascii"),
                 "name": name,
-                "file_type": CRT_CHIP_TYPES.get(
-                    chip_type, "CHP%d" % chip_type
-                ),
+                "file_type": CRT_CHIP_TYPES.get(chip_type, "CHP%d" % chip_type),
                 "locked": 0,
                 "splat": 0,
                 "blocks": None,
@@ -730,9 +730,7 @@ def catalog_image(con, root, full_path, force=False, verbose=False):
             ],
         )
 
-    logging.debug(
-        '  %s [%s] "%s" - %d files', rel, image_type, diskname, len(files)
-    )
+    logging.debug('  %s [%s] "%s" - %d files', rel, image_type, diskname, len(files))
     return "updated" if row else "added"
 
 
@@ -750,9 +748,7 @@ def cmd_scan(args):
     counts = {"added": 0, "updated": 0, "skipped": 0, "error": 0}
 
     for path in find_images(root):
-        result = catalog_image(
-            con, root, path, force=args.force, verbose=args.verbose
-        )
+        result = catalog_image(con, root, path, force=args.force, verbose=args.verbose)
         counts[result] += 1
 
     changed = counts["added"] + counts["updated"]
@@ -785,24 +781,25 @@ def cmd_scan(args):
     return 0
 
 
-def cmd_search(args):
+def cmd_search(args: argparse.Namespace) -> int:
     if not args.database and not config_database():
         logging.error("No database specified.")
         return 2
 
-    con = open_db(args.database if args.database else config_database())
+    con: sqlite3.Connection = open_db(
+        args.database if args.database else config_database()
+    )
     if not has_fts5(con):
         logging.error("This SQLite build lacks FTS5")
         return 2
     fts_exists = con.execute(
-        "SELECT COUNT(*) FROM sqlite_master "
-        "WHERE type='table' AND name='search_fts'"
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='search_fts'"
     ).fetchone()[0]
     if not fts_exists:
         logging.error("No search index; run a scan first")
         return 2
 
-    sql = (
+    sql: str = (
         "SELECT d.path, d.diskname, f.name, f.file_type, f.blocks, "
         "f.size_bytes, f.splat, f.load_addr "
         "FROM search_fts s "
@@ -810,7 +807,7 @@ def cmd_search(args):
         "JOIN disks d ON d.id = s.disk_id "
         "WHERE search_fts MATCH ? "
     )
-    params = [args.query]
+    params: list[str] = [args.query]
     if args.type:
         sql += "AND f.file_type = ? "
         params.append(args.type.upper())
@@ -829,20 +826,42 @@ def cmd_search(args):
         logging.info("no matches for: %s", args.query)
         return 1
 
+    if args.csv:
+        print("load_addr,name,flag,ftype,size,diskname,path")
+    if args.json:
+        jout: list[dict[str, str | int]] = []
     for path, diskname, name, ftype, blocks, size, splat, load_addr in rows:
-        size_str = "%d blk" % blocks if blocks is not None else "%d B" % size
-        flag = "*" if splat else " "
-        if ftype == "PRG" and load_addr is not None:
-            name = "[$%04X] %s" % (load_addr, name)
-        logging.info(
-            "%-24s %s%-4s %8s  [%s] %s",
-            name,
-            flag,
-            ftype,
-            size_str,
-            diskname,
-            path,
-        )
+        size_str: str = "%d blk" % blocks if blocks is not None else "%d B" % size
+        flag: str = "*" if splat else " "
+        if load_addr is None:
+            load_addr = 0
+        if args.json:
+            jout.append(
+                {
+                    "load_addr": load_addr,
+                    "name": name,
+                    "flag": flag,
+                    "ftype": ftype,
+                    "size": size_str,
+                    "diskname": diskname,
+                    "path": path,
+                }
+            )
+        elif args.csv:
+            print(f"{load_addr},{name},{flag},{ftype},{size_str},{diskname},{path}")
+        else:
+            logging.info(
+                "%d %-24s %s%-4s %8s  [%s] %s",
+                load_addr,
+                name,
+                flag,
+                ftype,
+                size_str,
+                diskname,
+                path,
+            )
+    if args.json:
+        print(dumps(jout))
     logging.info("%d match(es)", len(rows))
     return 0
 
@@ -863,9 +882,7 @@ def main():
     sub = ap.add_subparsers(dest="command", required=True)
 
     ap_scan = sub.add_parser("scan", help="scan a directory tree for images")
-    ap_scan.add_argument(
-        "directory", help="root directory to scan recursively"
-    )
+    ap_scan.add_argument("directory", help="root directory to scan recursively")
     ap_scan.add_argument(
         "database",
         nargs="?",
@@ -887,12 +904,12 @@ def main():
         "query",
         help='FTS5 query: turbo* | "exact phrase" | demo AND NOT intro',
     )
-    ap_search.add_argument(
-        "--type", help="filter by file type (PRG, SEQ, ...)"
-    )
+    ap_search.add_argument("--type", help="filter by file type (PRG, SEQ, ...)")
     ap_search.add_argument(
         "--limit", type=int, default=50, help="max results (default 50)"
     )
+    ap_search.add_argument("--csv", help="Output as csv", action="store_true")
+    ap_search.add_argument("--json", help="Output as json", action="store_true")
     ap_search.set_defaults(func=cmd_search)
 
     args = ap.parse_args()
