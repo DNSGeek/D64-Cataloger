@@ -19,6 +19,7 @@ Schema:
 
 import argparse
 import configparser
+import csv
 import logging
 import os
 import sqlite3
@@ -33,7 +34,9 @@ APP_NAME = "D64Catalog"
 def config_path():
     if sys.platform == "win32":
         base = (
-            Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+            Path(
+                os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")
+            )
             / APP_NAME
         )
     elif sys.platform == "darwin":
@@ -231,7 +234,8 @@ def parse_d64(data, stem=None):
         data,
         start=(18, 1),
         offset_fn=_d64_offset,
-        valid_ts=lambda t, s: 1 <= t <= tracks and s < _d64_sectors_on_track(t),
+        valid_ts=lambda t, s: 1 <= t <= tracks
+        and s < _d64_sectors_on_track(t),
     )
     return diskname_raw, dos_id, files
 
@@ -336,7 +340,8 @@ def _parse_d8x(data, tracks):
         data,
         start=(39, 1),
         offset_fn=_d8x_offset,
-        valid_ts=lambda t, s: 1 <= t <= tracks and s < _d8x_sectors_on_track(t),
+        valid_ts=lambda t, s: 1 <= t <= tracks
+        and s < _d8x_sectors_on_track(t),
     )
     return diskname_raw, dos_id, files
 
@@ -480,7 +485,9 @@ def parse_crt(data, stem=None):
             {
                 "name_raw": name.encode("ascii"),
                 "name": name,
-                "file_type": CRT_CHIP_TYPES.get(chip_type, "CHP%d" % chip_type),
+                "file_type": CRT_CHIP_TYPES.get(
+                    chip_type, "CHP%d" % chip_type
+                ),
                 "locked": 0,
                 "splat": 0,
                 "blocks": None,
@@ -730,7 +737,9 @@ def catalog_image(con, root, full_path, force=False, verbose=False):
             ],
         )
 
-    logging.debug('  %s [%s] "%s" - %d files', rel, image_type, diskname, len(files))
+    logging.debug(
+        '  %s [%s] "%s" - %d files', rel, image_type, diskname, len(files)
+    )
     return "updated" if row else "added"
 
 
@@ -748,7 +757,9 @@ def cmd_scan(args):
     counts = {"added": 0, "updated": 0, "skipped": 0, "error": 0}
 
     for path in find_images(root):
-        result = catalog_image(con, root, path, force=args.force, verbose=args.verbose)
+        result = catalog_image(
+            con, root, path, force=args.force, verbose=args.verbose
+        )
         counts[result] += 1
 
     changed = counts["added"] + counts["updated"]
@@ -826,12 +837,16 @@ def cmd_search(args: argparse.Namespace) -> int:
         logging.info("no matches for: %s", args.query)
         return 1
 
+    writer = csv.writer(sys.stdout)
+    jout: list[dict[str, str | int]] = []
     if args.csv:
-        print("load_addr,name,flag,ftype,size,diskname,path")
-    if args.json:
-        jout: list[dict[str, str | int]] = []
+        writer.writerow(
+            ["load_addr", "name", "flag", "ftype", "size", "diskname", "path"]
+        )
     for path, diskname, name, ftype, blocks, size, splat, load_addr in rows:
-        size_str: str = "%d blk" % blocks if blocks is not None else "%d B" % size
+        size_str: str = (
+            "%d blk" % blocks if blocks is not None else "%d B" % size
+        )
         flag: str = "*" if splat else " "
         if load_addr is None:
             load_addr = 0
@@ -848,7 +863,9 @@ def cmd_search(args: argparse.Namespace) -> int:
                 }
             )
         elif args.csv:
-            print(f"{load_addr},{name},{flag},{ftype},{size_str},{diskname},{path}")
+            writer.writerow(
+                [load_addr, name, flag, ftype, size_str, diskname, path]
+            )
         else:
             logging.info(
                 "%d %-24s %s%-4s %8s  [%s] %s",
@@ -882,7 +899,9 @@ def main():
     sub = ap.add_subparsers(dest="command", required=True)
 
     ap_scan = sub.add_parser("scan", help="scan a directory tree for images")
-    ap_scan.add_argument("directory", help="root directory to scan recursively")
+    ap_scan.add_argument(
+        "directory", help="root directory to scan recursively"
+    )
     ap_scan.add_argument(
         "database",
         nargs="?",
@@ -904,12 +923,16 @@ def main():
         "query",
         help='FTS5 query: turbo* | "exact phrase" | demo AND NOT intro',
     )
-    ap_search.add_argument("--type", help="filter by file type (PRG, SEQ, ...)")
+    ap_search.add_argument(
+        "--type", help="filter by file type (PRG, SEQ, ...)"
+    )
     ap_search.add_argument(
         "--limit", type=int, default=50, help="max results (default 50)"
     )
     ap_search.add_argument("--csv", help="Output as csv", action="store_true")
-    ap_search.add_argument("--json", help="Output as json", action="store_true")
+    ap_search.add_argument(
+        "--json", help="Output as json", action="store_true"
+    )
     ap_search.set_defaults(func=cmd_search)
 
     args = ap.parse_args()
